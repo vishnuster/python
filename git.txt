@@ -1,32 +1,32 @@
-to configure git for the first time:
+1. to configure git for the first time:
 
 git config --global user.name "your username"
 git config --global user.email "your email ID"
 
 
-To add a remote repository: git remote add origin https://github.com/vishnuster/test.git
+2. To add a remote repository: git remote add origin https://github.com/vishnuster/test.git
 
 
-to initiate a repo: change directory to the folder name cd <folder name> and run : git init
+3. to initiate a repo: change directory to the folder name cd <folder name> and run : git init
 
-to check if the remote repo has been added:  git remote -v
+4. to check if the remote repo has been added:  git remote -v
 
-to make git recognise a file: git add <filename>
+5. to make git recognise a file: git add <filename>
 
-to commit changes to repo: git commit -m "commit comment"
+6. to commit changes to repo: git commit -m "commit comment"
 
-to push commits to remote repo: git push <branch name>
+7. to push commits to remote repo: git push <branch name>
 
-to pull commits from remote repo: git pull
+8. to pull commits from remote repo: git pull
 
-to remove a file from repo: git rm <file name>
+9. to remove a file from repo: git rm <file name>
 
 
-Amending older or multiple commit messages
+10. Amending older or multiple commit messages
 
 If you have already pushed the commit to GitHub, you will have to force push a commit with an amended message.
 
-#Amending the message of the most recently pushed commit : git push --force example-branch
+Amending the message of the most recently pushed commit : git push --force example-branch
 
 
 Amending the message of older or multiple commit messages: 
