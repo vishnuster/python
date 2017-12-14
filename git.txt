@@ -31,6 +31,8 @@ Amending the message of the most recently pushed commit : git push --force examp
 
 Amending the message of older or multiple commit messages: 
 
+11. To commit without a commit message: git commit --allow-empty-message -m ""
+
 
 
 
