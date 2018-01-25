@@ -14,4 +14,3 @@ c=b[21].replace('Panjim','')
 today=time.strftime("%d/%m/%Y")
 print("Petrol price in Panjim on", today,"is",c,"\n")
 input("Hit enter to exit")
-

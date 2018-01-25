@@ -15,4 +15,3 @@ elif (inpt == 'kernel'):
     print(kernel)
 else:
     print("wrong input")
-this is a test
