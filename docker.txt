@@ -1,0 +1,21 @@
+docker ps -a
+
+docker run --name test-docker -d centos /bin/bash
+
+docker images
+
+docker inspect <dockerid>
+
+docker save -o /root/gitdocker d123f4e55e12
+
+dig +short myip.opendns.com
+
+docker run -dit -p 10.90.19.42:80:80 hidetarou2013/centos6-apache
+
+docker run -dit centos
+
+docker create hidetarou2013/centos6-apache
+
+
+
+
