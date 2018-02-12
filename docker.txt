@@ -16,6 +16,9 @@ docker run -dit centos
 
 docker create hidetarou2013/centos6-apache
 
+To create an image of a docker container. >> docker commit -a "author name" -m "description" <image-name> <new-image-name>
 
+To save a docker image so that it can be copied or moved toa different machine >> docker save -o <save image to path> <image name>
 
+To load a copied tar file inot docker >> docker load -i <path to image tar file>
 
