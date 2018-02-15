@@ -33,7 +33,13 @@ Amending the message of older or multiple commit messages:
 
 11. To commit without a commit message: git commit --allow-empty-message -m ""
 
+12. git checkout -b "branchname" >> to create a new branch and at the same time switch to the newly created branch
 
+13. git branch  >> lists all the branches created.
+
+14. git merge <branch name>  >> this will merge branchname with the current branch that you are in.
+
+15. git branch -d "branchname"  >> delete branch "branchname" locally.
 
 
 
