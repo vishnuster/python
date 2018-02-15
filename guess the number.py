@@ -1,3 +1,4 @@
+#This program will ask you to guess a number
 import random
 a=random.randint(1,20)
 while True:
