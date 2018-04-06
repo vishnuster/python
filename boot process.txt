@@ -1,9 +1,11 @@
 BOOT PROCESS
 Link: https://www.slashroot.in/linux-booting-process-step-step-tutorial-understanding-linux-boot-sequence
 
-Step 1 Power Supply & SMPS
+Step 1 Power Supply & SMPS (Switching Mode Power Supply)
 The primary objective of this component is to provide the perfect required voltage level to the motherboard and other computer components. Computer internals work in DC, however the power supply we have at home and other places are AC. SMPS converts AC to DC and maintain the required voltage level so that the computer can work flawlessly.
-But the main task performed by SMPS, is to inform about the good power supply. If the power signal level is perfect, then SMPS will send a POWER GOOD signal to the motherboard timer.
+But the main task performed by SMPS, is to inform about the good power supply. 
+
+If the power signal level is perfect, then SMPS will send a POWER GOOD signal to the motherboard timer.
 On receiving this POWER GOOD signal from SMPS, the motherboard timer will stop sending reset signal to the CPU. Which means the power level is good and the computer can boot.
 
 
@@ -17,18 +19,12 @@ Step 3: The Role of BIOS in booting process
 
 The computer knows how to bring itself up, when you press the start button, because of the instructions that are fed to a program called as BIOS. BIOS stands for Basic Input Output System. The most important use of BIOS during the booting process is POST. POST stands for Power on Self Test. Its a series of tests conducted by the bios, which confirms the proper functioning of different hardware components attached to the computer.
 If you are doing a warm start (which means you did a reset of a running machine, most of the times reset button is the small one near the power button on the CPU), a full POST check will not be conducted by the BIOS. However if you are doing a Cold Start, which means you have applied the power now, it will conduct a full POST
-
 BIOS determines whether its a cold or warm start, by looking at a flag in a predefined memory location. Once the POST completes, the BIOS will inform you about any problems it found with the help of beep codes (through system speaker). Different number of beep codes have different meaning.
 
+
 There are two things that people often get confused with. Its CMOS & BIOS. CMOS & BIOS are two completely different things in the computer motherboard. CMOS is a small memory RAM chip that's present in the motherboard. This RAM is different from the computers main RAM chip (which are replaceable memory chips.
-
 Unlike the main RAM chip, CMOS RAM does not flush its memory when a computer is turned off. It remembers all the configuration with the help of a battery called CMOS battery.
-
-Removing a CMOS battery will make the CMOS to forget all the configuration you have saved previously.
-
-Normally people say that we have modified BIOS settings. But its completely wrong. What they modified is in fact CMOS settings. CMOS settings is the place where you modify the boot order etc.
-
-Bios settings cannot be altered by the user. It requires a flash program provided by the manufacturer.
+Removing a CMOS battery will make the CMOS to forget all the configuration you have saved previously. Normally people say that we have modified BIOS settings. But its completely wrong. What they modified is in fact CMOS settings. CMOS settings is the place where you modify the boot order etc.Bios settings cannot be altered by the user. It requires a flash program provided by the manufacturer.
 
 So Let's get back to our booting process. Once the POST check is completed successfully, BIOS will look CMOS settings to know what is the boot order. Boot order is nothing but a user defined order which tells where to look for the operating system.
 
