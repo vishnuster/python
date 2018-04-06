@@ -1,0 +1,91 @@
+BOOT PROCESS
+Link: https://www.slashroot.in/linux-booting-process-step-step-tutorial-understanding-linux-boot-sequence
+
+Step 1 Power Supply & SMPS
+The primary objective of this component is to provide the perfect required voltage level to the motherboard and other computer components. Computer internals work in DC, however the power supply we have at home and other places are AC. SMPS converts AC to DC and maintain the required voltage level so that the computer can work flawlessly.
+But the main task performed by SMPS, is to inform about the good power supply. If the power signal level is perfect, then SMPS will send a POWER GOOD signal to the motherboard timer.
+On receiving this POWER GOOD signal from SMPS, the motherboard timer will stop sending reset signal to the CPU. Which means the power level is good and the computer can boot.
+
+
+Step 2 Bootstrapping
+
+Something has to be programmed by default, so that the CPU knows where to search for instructions. This is an address location in the ROM. This address location is almost always constant in X86 based computers. The address location is FFFF:0000h.
+This address location is the last region of the ROM. It only contains one instruction. The instruction is to jump to another memory address location. This JUMP command, will tell the location of the BIOS program in the ROM. This is how the computer will come to know where the BIOS program is located.
+
+
+Step 3: The Role of BIOS in booting process
+
+The computer knows how to bring itself up, when you press the start button, because of the instructions that are fed to a program called as BIOS. BIOS stands for Basic Input Output System. The most important use of BIOS during the booting process is POST. POST stands for Power on Self Test. Its a series of tests conducted by the bios, which confirms the proper functioning of different hardware components attached to the computer.
+If you are doing a warm start (which means you did a reset of a running machine, most of the times reset button is the small one near the power button on the CPU), a full POST check will not be conducted by the BIOS. However if you are doing a Cold Start, which means you have applied the power now, it will conduct a full POST
+
+BIOS determines whether its a cold or warm start, by looking at a flag in a predefined memory location. Once the POST completes, the BIOS will inform you about any problems it found with the help of beep codes (through system speaker). Different number of beep codes have different meaning.
+
+There are two things that people often get confused with. Its CMOS & BIOS. CMOS & BIOS are two completely different things in the computer motherboard. CMOS is a small memory RAM chip that's present in the motherboard. This RAM is different from the computers main RAM chip (which are replaceable memory chips.
+
+Unlike the main RAM chip, CMOS RAM does not flush its memory when a computer is turned off. It remembers all the configuration with the help of a battery called CMOS battery.
+
+Removing a CMOS battery will make the CMOS to forget all the configuration you have saved previously.
+
+Normally people say that we have modified BIOS settings. But its completely wrong. What they modified is in fact CMOS settings. CMOS settings is the place where you modify the boot order etc.
+
+Bios settings cannot be altered by the user. It requires a flash program provided by the manufacturer.
+
+So Let's get back to our booting process. Once the POST check is completed successfully, BIOS will look CMOS settings to know what is the boot order. Boot order is nothing but a user defined order which tells where to look for the operating system.
+
+The order will be something like the below.
+
+CD ROM
+HARD DISK
+USB
+Floppy DISK
+
+Let's assume that you don’t have a bootable CD in your CD ROM drive, then the BIOS will turn to HARD disk.
+
+
+Step 4: MBR and GRUB
+
+The second device is your Hard Disk. BIOS is programmed to look at a permanent location on the hard disk to complete its task. This location is called a Boot sector. This is nothing but the first sector of your hard disk. This area is sometimes called as MBR (Master Boot Record). This is the location that contains the program that will help our computer to load the operating system. As soon as bios finds a valid MBR, it will load the entire content of MBR to RAM, and then further execution is done by the content of MBR.
+
+This first sector of the hard disk is only of 512 bytes. Yeah its too small an area for an entire boot loader program to fit in. Hence most of the operating system store only the first stage of their boot loader program in here. Only the first 440 bytes from the total of 512 bytes is used by the first stage boot loader, the remaining part is used to store partition table information. The MBR contains the first stage of the grub, and partition table information.
+
+Grub stage 1 in the MBR will look for a partition with active flag set on it. Please remember the fact that there can only be one active partition from the 4. If you see my partition table output above, partition 1 is having an active flag.
+
+First stage grub
+Partition table information
+Error messages
+Magic Number
+
+The fourth point is a Magic Number of 2 bytes. This magic number serves as a method of verification for the MBR. This 2 byte magic number will contain values that will be something like AA55. A different magic number indicates a corrupted MBR or invalid MBR. The primary job of the stage 1 bootloader is to load the second stage boot loader. The second stage boot loader is the stage 2 grub, that actually does the job of loading the kernel and other initrd image files (we will come to that part in some time). GRUB (Grand Unified Boot Loader) is the combined name given to different stages of grub.
+
+There are not two stages of grub. But there are three stages of grub in total. I will explain you the reason behind this. The three stages are mentioned below.
+
+GRUB Stage 1
+GRUB Stage 1.5
+Grub Stage 2
+
+Now from where does this stage 1.5 came. The hard disk sectors are counted form 0 to the last sector. As explained previously the first sector (sector 0) contains the GRUB stage 1. Normally partititons will not start before sector 63. So partitions will start form sector number 63. Hence we have sectors form 1-63 free. This space is used for storing GRUB stage 1.5. This free space between MBR and the beginning of the partitions is called as MBR GAP.
+
+Grub Stage 1.5 located in the MBR GAP (sector 1 to 63 before the beginning of the first partition) basically contains the drivers for reading file systems. So grub stage 1 will load grub stage 1.5 to the RAM, and will pass the control to it.
+Now grub stage 1.5 will load the file system drivers and once the file system drivers are loaded, it can now access /boot/grub/grub.conf file which contains other details about kernel path and initrd path etc.
+
+Now this is the point where you are presented with a beautiful TUI (Terminal user interface), where you can select your operating system kernal and press enter to boot it.
+
+
+Step 5 Loading The kernel Image
+
+Similar to GRUB, kernel is also loaded in stages. A linux kernel is responsible for handling Process management, Memory Management, Users, Inter process communication etc. I must say kernel is never used by a user. What the kernel does is to maintain a good environment for programs to run. Yeah we use kernel thrugh different programs.
+
+Kernel is a compressed image file. The location of this compressed kernel image is specified in the grub 2 configuration file. Its basically an executable bzImage file. Initrd is sometimes called as initial root file system. This is used by the kernel before the real root file system is mounted.  Initrd is available in the form of an image similar to the kernel image file. Let's see what's the content of this initrd image file. You can find the initrd image file and the kernel image file in the /boot directory.  Its a small root file system that the kernel loads as a temporary root file system before the real root file system is loaded.
+
+Loading and unloading of kernel modules is done with the help of programs like insmod, and rmmod present in the initrd image. Now as the kernel is loaded into the memory, the execution begins by checking the processor family and architecture. The kernel conducts a lot of hard ware specific operations and the first user space program it executes is /sbin/init. As this is the first program executed by the kernel, it has got a process id number of 1. Now as soon as the kernel executes the init process, it will look at the /etc/inittab configuration file to see the default run level.
+
+The /etc/inittab file contains the default run level. Now that means, we have a run level 3 as the default run level. Once this is identified, then run level specific programs are started by the kernel. The folders rc0.d, rc1.d, rc2.d etc contains run level specific programs that will be executed depending upon the default run level you have in your inittab configuration file. 
+
+f you see the files inside these run level specific folders, they either begin with S or they begin with K. The files are also numbered. Now files with an S at starting will be executed during the startup process, and files that begins with K, will be killed during shutdown process.
+
+The number after either S or K is the sequence with which these will be executed.
+
+Once the kernel has started all programs in your desired run level directory. You will get a login screen to log inside your booted system.
+
+
+
