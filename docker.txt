@@ -23,3 +23,5 @@ To save a docker image so that it can be copied or moved to a different machine 
 To load a copied tar file in to docker >> docker load -i <path to image tar file>
 
 docker run --name=nginx -d -v ~/nginxlogs:/var/log/nginx -p 5000:80 nginx  >> to bindmount a volume from the docker container to the host machine.
+
+test
