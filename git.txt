@@ -41,8 +41,9 @@ Amending the message of older or multiple commit messages:
 
 15. git branch -d "branchname"  >> delete branch "branchname" locally.
 
+16. git revert ce1422fdc96a7f7db3cbe593395e8f788e43336b  >> command to revert a particular commit
 
-
+17. git revert --abort  >> to abort and roleback a revert.
 
 
 
