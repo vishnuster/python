@@ -45,7 +45,7 @@ Amending the message of older or multiple commit messages:
 
 17. git revert --abort  >> to abort and roleback a revert.
 
-
+18. git blame <filename> >> Show what revision and author last modified each line of a file
 
 
 
