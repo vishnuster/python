@@ -1,0 +1,66 @@
+Parameters:
+  InstName:
+    Type: String
+  Loginkey:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+
+Resources:
+  MyInstance:
+    Type: 'AWS::EC2::Instance'
+    MetaData:
+      'AWS::CloudFormation::Init'
+        config:
+          packages:
+            yum:
+              httpd: []
+          files:
+            /var/www/index.html:
+              content: !Sub |
+                <html>This is a cloud formation test site!!</html>
+          services:
+            sysvinit:
+              httpd:
+                enabled: true
+                ensureRunning: true
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0080e4c5bc078760e
+      Tags:
+      - Key: Name
+        Value: !Ref InstName
+      KeyName: !Ref Loginkey
+    SecurityGroups:
+      - !Ref testsg
+  testsg:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: allows port 22 from 182.76.82.166/32
+      GroupName: testsg
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 182.76.82.166/32
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 182.76.82.166/32
+    UserData:
+      !Base64:
+        !Sub |
+          #!/bin/bash -xe
+          yum -y install aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Myinstance --region ${AWS::Region}
+
+
+Output:
+  Servername:
+    Description: get instance name
+    Value: !GetAtt
+    - MyInstance
+  ServerDNS:
+    Description:: Public DNS of instance
+    Value: !GetAtt
+    - PublicDnsName
+
+
