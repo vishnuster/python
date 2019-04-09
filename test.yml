@@ -1,3 +1,4 @@
+AWSTemplateFormatVersion: 2010-09-09
 Parameters:
   InstName:
     Type: String
@@ -8,20 +9,21 @@ Resources:
   MyInstance:
     Type: 'AWS::EC2::Instance'
     MetaData:
-      'AWS::CloudFormation::Init'
+      AWS::CloudFormation::Init:
         config:
           packages:
             yum:
-              httpd: []
+              httpd:[]
           files:
             /var/www/index.html:
               content: !Sub |
                 <html>This is a cloud formation test site!!</html>
           services:
             sysvinit:
-              httpd:
-                enabled: true
-                ensureRunning: true
+             httpd:
+               enabled: true
+               ensureRunning: true
+
     Properties:
       InstanceType: t2.micro
       ImageId: ami-0080e4c5bc078760e
@@ -29,8 +31,14 @@ Resources:
       - Key: Name
         Value: !Ref InstName
       KeyName: !Ref Loginkey
-    SecurityGroups:
+      SecurityGroups:
       - !Ref testsg
+      UserData:
+        'Fn::Base64':
+          !Sub |
+            #!/bin/bash -xe
+            yum -y install aws-cfn-bootstrap
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource MyInstance --region ${AWS::Region}
   testsg:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
@@ -45,22 +53,3 @@ Resources:
         FromPort: 80
         ToPort: 80
         CidrIp: 182.76.82.166/32
-    UserData:
-      !Base64:
-        !Sub |
-          #!/bin/bash -xe
-          yum -y install aws-cfn-bootstrap
-          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Myinstance --region ${AWS::Region}
-
-
-Output:
-  Servername:
-    Description: get instance name
-    Value: !GetAtt
-    - MyInstance
-  ServerDNS:
-    Description:: Public DNS of instance
-    Value: !GetAtt
-    - PublicDnsName
-
-
