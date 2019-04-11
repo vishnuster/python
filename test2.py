@@ -19,8 +19,8 @@ Resources:
            echo "<html>This is a test page.</html>" > /var/www/index.html
            service httpd start
  Testsg:
-   Type:'AWS::EC2::SecurityGroup'
-   Proeprties:
+   Type: 'AWS::EC2::SecurityGroup'
+   Properties:
      GroupDescription: open port 22 from for machine
      GroupName: testsg
      SecurityGroupIngress:
@@ -28,3 +28,10 @@ Resources:
          FromPort: 22
          ToPort: 22
          CidrIp: 182.76.82.166/32
+Outputs:
+  Instancedns:
+    Description: Outputs the instance public DNS
+    Value: !GetAtt Testinstance.PublicDnsName
+  InstancepublicIp:
+    Description: Outputs Public IP of instance
+    Value: !GetAtt Testinstance.PublicIp
