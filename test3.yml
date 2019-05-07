@@ -1,0 +1,39 @@
+Parameters:
+  InstName:
+    Type: String
+    Description: Name of the instance
+  Mykeypair:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: Enter key name to login into the ec2 isntance
+
+Mappings:
+  Amimap:
+    us-east-1:
+      AMI: ami-0080e4c5bc078760e
+    sa-east-1:
+      AMI: ami-0669a96e355eac82f
+
+Resources:
+  Ec2instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !FindInMap [Amimap,!Ref 'AWS::Region',AMI]
+      Tags:
+        Key: Name
+        Value: !Ref InstName
+      SecurityGroups:
+        - !Ref Secgroup
+
+  Secgroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+     GroupDescription: open port 22 from my machine
+     GroupName: testsg
+     SecurityGroupIngress:
+       - IpProtocol: tcp
+         FromPort: 22
+         ToPort: 22
+         CidrIp: 182.76.82.166/32
+
+
