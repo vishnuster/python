@@ -1,0 +1,37 @@
+Parameters:
+  Instancename:
+    Type: String
+    Description: Enter instance name
+Resources:
+  Myinstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0756fbca465a59a30
+      SecurityGroups:
+        - !Ref Secgroup1
+        - !Ref Secgroup2
+      Tags:
+        - Key: Name
+          Value: !Ref Instancename
+  Secgroup1:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: test security group
+      GroupName: testsg1
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 182.76.82.166/32
+
+  Secgroup2:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: test security group
+      GroupName: testsg2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 182.76.82.166/32
