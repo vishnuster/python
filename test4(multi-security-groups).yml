@@ -2,12 +2,25 @@ Parameters:
   Instancename:
     Type: String
     Description: Enter instance name
+  Azone:
+    Type: String
+    Default: us-east-1
+    AllowedValues:
+      - us-east-1
+      - ap-northeast-1
+Mappings:
+  Mapname:
+    us-east-1:
+      AMI: 'ami-0756fbca465a59a30'
+    ap-northeast-1:
+      AMI: 'ami-0ccdbc8c1cb7957be'
+
 Resources:
   Myinstance:
     Type: 'AWS::EC2::Instance'
     Properties:
       InstanceType: t2.micro
-      ImageId: ami-0756fbca465a59a30
+      ImageId: !FindInMap [Mapname, !Ref Azone, AMI]
       SecurityGroups:
         - !Ref Secgroup1
         - !Ref Secgroup2
