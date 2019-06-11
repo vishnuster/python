@@ -1,0 +1,1763 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+
+Parameters:
+  Stage:
+    Type: String
+    Description: Environment which is to be deployed prod stage dev
+    Default: test
+    AllowedValues:
+      - prod
+      - dev
+      - stage
+      - test
+
+  AuthwsPass:
+    Type: String
+    NoEcho: true
+    Description: For access to authws
+
+  #Following parameter will set the concurrency count for bulkcopy lambda
+  lambdaconcurrencycount:
+    Type: Number
+    Description: Parameter to be set as concurrency count for Datalake Environment
+    Default: 10
+
+  #Following Parameters are for Kinesisis currently not required to be edited if comes in future
+  Kinesisshards:
+    Type: Number
+    Description: The number of nodes to configure for elasticsearch cluster
+    Default: 2
+  Kinesisdataretention:
+    Type: Number
+    Description: The number of nodes to configure for elasticsearch cluster
+    Default: 24
+
+  DynamoToESStreamBatchSize:
+    Type: Number
+    Default: 100
+    Description: The maximum batch size used when consuming from the dynamodb files table stream (to sync with ES).
+  apiGatewayStageName:
+    Type: String
+    Default: v1
+    Description: Apigateway Stage Name to be Deployed.
+
+Mappings:
+  StageMapping:
+    auth-url:
+      "dev": "https://accessdev.morningstarcommodity.com/authws/validation"
+      "stage": "https://accessdev.morningstarcommodity.com/authws/validation"
+      "prod": "https://access.morningstarcommodity.com/authws/validation"
+      "test": "https://accessdev.morningstarcommodity.com/authws/validation"
+
+    auth-url-jwt:
+      "dev": "https://accessdev.morningstarcommodity.com/authws/pubk/verify"
+      "stage": "https://accessdev.morningstarcommodity.com/authws/pubk/verify"
+      "prod": "https://access.morningstarcommodity.com/authws/pubk/verify"
+      "test": "https://accessdev.morningstarcommodity.com/authws/pubk/verify"
+
+    auth-user:
+      "dev": "ldsauthprovider"
+      "stage": "ldsauthprovider"
+      "prod": "admin"
+      "test": "ldsauthprovider"
+
+  RegionMap:
+    us-east-1:
+      ReplicationRegion: us-west-2
+    us-west-2:
+      ReplicationRegion: us-east-1
+
+Globals:
+  Function:
+    Runtime: python3.6
+    MemorySize: 128
+    Timeout: 27
+    Tracing: Active
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+        PYTHONPATH: /var/runtime:/var/task:/var/task/src:/var/task/libs:/var/task/site-packages
+        AUTH_URL: !FindInMap [ StageMapping, auth-url, !Ref Stage]
+        AUTH_URL_JWT: !FindInMap [ StageMapping, auth-url-jwt, !Ref Stage]
+        AUTH_USER: !FindInMap [ StageMapping, auth-user, !Ref Stage]
+        DYNAMODB_PENDING_TABLE: !Sub "datalake-${Stage}-pending-files"
+        DYNAMODB_FILES_TABLE: !Sub "datalake-${Stage}-files"
+        DYNAMODB_USER_TABLE: !Sub "datalake-${Stage}-creds"
+        DYNAMODB_SCHEMA_TABLE: !Sub "datalake-${Stage}-schema"
+        DYNAMODB_ROLES_TABLE: !Sub "datalake-${Stage}-roles"
+        DYNAMODB_BULK_LIST_TABLE: !Sub "datalake-${Stage}-bulkfileslist"
+        FILE_BUCKET: !Sub "datalake-${Stage}-files-${AWS::Region}"  # cannot use Ref here
+        ES_ENDPOINT:
+          Fn::ImportValue:
+            Fn::Sub: "datalake-${Stage}-es-metadata-endpoint"
+        ES_CONTENT_ENDPOINT:
+          Fn::ImportValue:
+            Fn::Sub: "datalake-${Stage}-es-content-endpoint"
+
+Resources:
+  FilesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete   # only works if bucket is empty
+    DependsOn:
+      - S3ReplicationRole
+      # - FileArrivalQueuePolicy
+    Properties:
+      BucketName: !Sub "datalake-${Stage}-files-${AWS::Region}"
+      # Versioning is required for cross region replication
+      VersioningConfiguration:
+        Status: Enabled
+      # Enable default encryption for bucket w/ default S3 key in KMS
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+      LoggingConfiguration:
+        DestinationBucketName: !Ref dllogsstorage
+        LogFilePrefix: logs
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Queue:
+              Fn::ImportValue: !Sub "datalake-${Stage}-file-created-queue"
+
+  S3ReplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "datalake-${Stage}-s3-replication-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: s3.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: "s3replication"
+        PolicyDocument:
+          Fn::Sub:
+          - |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Action": [
+                            "s3:ListBucket",
+                            "s3:GetReplicationConfiguration",
+                            "s3:GetObjectVersionForReplication",
+                            "s3:GetObjectVersionAcl"
+                        ],
+                        "Resource": [
+                            "arn:aws:s3:::datalake-${Stage}-files-${AWS::Region}",
+                            "arn:aws:s3:::datalake-${Stage}-files-${AWS::Region}/*"
+                        ],
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "s3:ReplicateObject",
+                            "s3:ReplicateDelete",
+                            "s3:ReplicateTags",
+                            "s3:GetObjectVersionTagging"
+                        ],
+                        "Resource": [
+                            "arn:aws:s3:::datalake-${Stage}-files-${DestRegion}/*"
+                        ],
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Condition": {
+                            "StringLike": {
+                                "kms:ViaService": "s3.${AWS::Region}.amazonaws.com",
+                                "kms:EncryptionContext:aws:s3:arn": [
+                                    "arn:aws:s3:::datalake-${Stage}-files-${AWS::Region}/*"
+                                ]
+                            }
+                        },
+                        "Action": [
+                            "kms:Decrypt"
+                        ],
+                        "Resource": [
+                            "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+                        ],
+                        "Effect": "Allow"
+                    }
+                ]
+            }
+          - DestRegion: !FindInMap [ RegionMap, !Ref "AWS::Region", ReplicationRegion ]
+
+  # Define the IAM Role with a policy document containing necessary permissions
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      # Is the below still needed?  I think the AWS::Serverless:Function may do this for us.
+#      RoleName: !Sub "${AWS::StackName}-datalake-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+      Path: /
+      Policies:
+        -
+          PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 'xray:PutTraceSegments'
+                  - 'xray:PutTelemetryRecords'
+                Resource: '*'
+              -
+                Effect: Allow               #Dl-169 Access to IAM role to create Cloudwatch Log Group
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:PutLogEvents'
+                  - 'logs:GetLogEvents'
+                  - 'logs:FilterLogEvents'
+                Resource: '*'
+
+              -
+                Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-contentindex"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-bulkcopy"
+
+              -
+                Effect: Allow
+                Action:
+                  - 'sns:*'
+                Resource:
+                  - Fn::ImportValue: !Sub "datalake-${Stage}-file-notification-topic"
+
+              -
+                Effect: Allow
+                Action:
+                  - 'kinesis:PutRecord'
+                  - 'kinesis:MergeShards'
+                  - 'kinesis:SplitShard'
+                  - 'kinesis:DecreaseStreamRetentionPeriod'
+                  - 'kinesis:PutRecords'
+                  - 'kinesis:GetShardIterator'
+                  - 'kinesis:IncreaseStreamRetentionPeriod'
+                  - 'kinesis:GetRecords'
+                  - 'kinesis:DescribeStream'
+                  - 'kinesis:ListTagsForStream'
+                Resource:
+                  - !Sub "arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${AWS::StackName}-publish-FileAarival-KinesisStream"
+  #                - !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:stream/${AWS::StackName}-bulkpoststream"
+
+              -
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - 'dynamodb:BatchGetItem'
+                  - 'dynamodb:BatchWriteItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:DescribeStream'
+                  - 'dynamodb:GetRecords'
+                  - 'dynamodb:GetShardIterator'
+                  - 'dynamodb:ListStreams'
+
+                Resource:
+                  # - !Sub '${creds.Arn}'
+                  # - !Sub '${files.Arn}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-files*' # For access to the stream
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-pending-files'
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-pending-files/*"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-files"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-files/*"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-schema"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-schema/*" # For indexes
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-creds"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-creds/*"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-roles"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-roles/*"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-bulkfileslist"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/datalake-${Stage}-bulkfileslist/*"
+
+              -
+                Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                Resource:
+                  Fn::ImportValue: !Sub "datalake-${Stage}-file-created-queue"
+
+  # Define the S3 log bucket - DL-168
+  dllogsstorage:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Delete
+    Properties:
+      # BucketName: !Sub "${AWS::StackName}-dllogsstorage"
+      BucketName: !Sub "datalake-${Stage}-logstorage-${AWS::Region}"
+      AccessControl: LogDeliveryWrite
+
+  #BulkuploadKinesisStream:
+  #  Type: 'AWS::Kinesis::Stream'
+  #  Properties:
+  #    Name: !Sub "${AWS::StackName}-bulkpoststream"
+  #    RetentionPeriodHours: !Ref Kinesisdataretention
+  #    ShardCount: !Ref Kinesisshards
+  #    Tags:
+  #      -
+  #        Key: Environment
+  #        Value: Datalake Kinesis for Bulk Upload
+
+
+#FOr Creating Kinesis Stream For dumping the contents.
+  publishFileAarivalKinesisStream:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: !Sub "${AWS::StackName}-publish-FileAarival-KinesisStream"
+      RetentionPeriodHours: !Ref Kinesisdataretention
+      ShardCount: !Ref Kinesisshards
+      Tags:
+        -
+          Key: Environment
+          Value: Datalake Kinesis for Publishing New File Arrival Details
+
+  # Define the lambdas
+  # Define the authorizer function
+  ldsauthorizer:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-ldsauthorizer"
+      Handler: src/functions/ldsauthorizer/handler.authorizer
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          AUTH_PASS: !Sub "${AuthwsPass}"
+      Tags:
+        Name : !Sub "${AWS::StackName}-ldsauthorizer"
+  ldsauthorizerPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - ldsauthorizer
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ldsauthorizer
+      Principal: apigateway.amazonaws.com
+
+#Postfile lambda for posting the metadata and records and uploading the file with presigned url
+  postfile:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-postfile"
+      Handler: 'src/functions/postfile/post_file_handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        postFileApi:
+          Type: Api
+          Properties:
+            Path: /files
+            Method: post
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-postfile"
+  postfilePerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - postfile
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref postfile
+      Principal: apigateway.amazonaws.com
+
+#proxy response Lmabda for returning 404 when invlaid path or method is called
+  proxyresponse:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-proxyresponse"
+      Handler: 'src/functions/proxyresponse/proxyresponse.lambda_handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        proxyresponseApi:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-proxyresponse"
+  proxyresponsePerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - proxyresponse
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref proxyresponse
+      Principal: apigateway.amazonaws.com
+
+  healthcheck:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-healthcheck"
+      Handler: 'src/functions/healthcheck/healthcheck.lambda_handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        healthcheckApi:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: GET
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-healthcheck"
+  healthcheckPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - healthcheck
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref healthcheck
+      Principal: apigateway.amazonaws.com
+
+#Lambda for Downloading the file with sha1_id
+  getfilebyid:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-getfilebyid"
+      Handler: 'src/functions/getfilebyid/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        getfilebyidApi:
+          Type: Api
+          Properties:
+            Path: /files/ids/{id}
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-getfilebyid"
+  getfilebyidPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - getfilebyid
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref getfilebyid
+      Principal: apigateway.amazonaws.com
+
+#lambda for posting the schema
+  postschema:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-postschema"
+      Handler: 'src/functions/postschema/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        postschemaApi:
+          Type: Api
+          Properties:
+            Path: /schemas
+            Method: post
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-postschema"
+  postschemaPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - postschema
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref postschema
+      Principal: apigateway.amazonaws.com
+
+#commented below resource creation will make changes according to DL-228
+  #createrole:
+  #  Type: 'AWS::Serverless::Function'
+  #  Properties:
+  #    FunctionName : !Sub "${AWS::StackName}-createrole"
+  #    Handler: 'src/functions/roleapi/roleapi.handler'
+  #    Description: 'Restful API endpoint'
+  #    CodeUri: deploy.zip
+  #    Role: !GetAtt LambdaExecutionRole.Arn
+  #    Events:
+  #      createroleApi:
+  #        Type: Api
+  #        Properties:
+  #          Path: /schemas/roleapi
+  #          Method: post
+  #          RestApiId: !Ref ApiGateway
+  #    Tags:
+  #      Name : !Sub "${AWS::StackName}-createrole"
+  #createrolePerm:
+  #  Type: "AWS::Lambda::Permission"
+  #  DependsOn:
+  #    - ApiGateway
+  #    - createrole
+  #  Properties:
+  #    Action: lambda:InvokeFunction
+  #    FunctionName: !Ref createrole
+  #    Principal: apigateway.amazonaws.com
+
+#get the schema definition with schema name
+  getschema:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-getschema"
+      Handler: 'src/functions/getschema/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        getschemaApi:
+          Type: Api
+          Properties:
+            Path: /schemas/{schema-name}
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-getschema"
+  getschemaPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - getschema
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref getschema
+      Principal: apigateway.amazonaws.com
+
+#delete the field of a record with sha1_id
+  deletefield:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-deletefield"
+      Handler: 'src/functions/deletefield/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        deletefield:
+          Type: Api
+          Properties:
+            Path: /files/ids/{id}/{field}
+            Method: delete
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-deletefield"
+  deletefieldPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - deletefield
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref deletefield
+      Principal: apigateway.amazonaws.com
+
+#lambda to modify the field of record using sha1_id
+  modifyfield:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-modifyfield"
+      Handler: 'src/functions/modifyfield/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        modifyfield:
+          Type: Api
+          Properties:
+            Path: /files/ids/{id}
+            Method: post
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-modifyfield"
+  modifyfieldPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - modifyfield
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref modifyfield
+      Principal: apigateway.amazonaws.com
+
+#
+#lambda for Downloading the file with filename pathtostore and schema name
+  getfile:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-getfile"
+      Handler: 'src/functions/getfile/get_file_handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        getfile:
+          Type: Api
+          Properties:
+            Path: /files/{filename}
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-getfile"
+  getfilePerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - getfile
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref getfile
+      Principal: apigateway.amazonaws.com
+
+#
+#lambda for changin the filestatus from Active to Inactive vicevers using Sha1_id
+  filestatus:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-filestatus"
+      Handler: 'src/functions/filestatus/file_status_handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        filestatus:
+          Type: Api
+          Properties:
+            Path: /files/status
+            Method: post
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-filestatus"
+  filestatusPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - filestatus
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref filestatus
+      Principal: apigateway.amazonaws.com
+
+#Search the schema list with application name and businees-unit and limit parameter
+  listandfilterschema:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-listandfilterschema"
+      Handler: 'src/functions/listandfilterschema/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        listandfilterschema:
+          Type: Api
+          Properties:
+            Path: /schemas/search
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-listandfilterschema"
+  listandfilterschemaPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - listandfilterschema
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref listandfilterschema
+      Principal: apigateway.amazonaws.com
+
+#lambda for searching the file metadata in Elastic search
+  searchfiles:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-searchfiles"
+      Handler: 'src/functions/searchfiles/search_handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        searchfiles:
+          Type: Api
+          Properties:
+            Path: /search/{schemaname}
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-searchfiles"
+  searchfilesPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - searchfiles
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref searchfiles
+      Principal: apigateway.amazonaws.com
+
+#
+#lambda for bulk search for more than 1000 records
+  bulkscrollsearch:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-bulkscrollsearch"
+      Handler: 'src/functions/bulkscrollsearch/scrollsearch.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        bulkscrollsearch:
+          Type: Api
+          Properties:
+            Path: /bulk/bulksearch/{schemaname}
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-bulkscrollsearch"
+  bulkscrollsearchPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - bulkscrollsearch
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref bulkscrollsearch
+      Principal: apigateway.amazonaws.com
+
+##lambda for posting large files from s3 to s3
+  bulkpost:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-bulkpost"
+      Handler: 'src/functions/bulkpost/bulkpost.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Events:
+        bulkpost:
+          Type: Api
+          Properties:
+            Path: /bulk/bulkpost
+            Method: post
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-bulkpost"
+  bulkpostPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - bulkpost
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref bulkpost
+      Principal: apigateway.amazonaws.com
+
+
+#lambda for validating bulkpost metadata subpart of bulupload
+  bulkmetavalidator:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-bulkmetavalidator"
+      Handler: 'src/functions/bulkupload/metadatavalidator.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 2048
+      Environment:
+        Variables:
+          STACK_NAME: !Sub "${AWS::StackName}"
+       #   KINESIS_BULKPOST_STREAM: !Sub "${AWS::StackName}-bulkpoststream"
+      Events:
+        bulkmetavalidator:
+          Type: Api
+          Properties:
+            Path: /bulk/bulkupload
+            Method: post
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-bulkmetavalidator"
+  bulkmetavalidatorPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - bulkmetavalidator
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref bulkmetavalidator
+      Principal: apigateway.amazonaws.com
+
+#
+#lambda from copying file from s3 to s3 subpart of bulkupload
+  bulkcopy:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-bulkcopy"
+      Handler: 'src/functions/bulkupload/copyfiles.handler'
+      Description: 'Restful API endpoint'
+      ReservedConcurrentExecutions: !Ref lambdaconcurrencycount
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: 2048
+      #    KINESIS_BULKPOST_STREAM: !Sub "${AWS::StackName}-bulkpoststream"
+      #Events:
+      #  Stream:
+      #    Type: DynamoDB
+      #    Properties:
+      #     Stream: !GetAtt bulkfileslist.StreamArn
+      #     BatchSize: !Ref bulkfilelistStreamBatchSize
+      #     StartingPosition: TRIM_HORIZON
+      Tags:
+        Name : !Sub "${AWS::StackName}-bulkcopy"
+  bulkcopyPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - bulkcopy
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref bulkcopy
+      Principal: lambda.amazonaws.com
+
+#
+#Lambda for listing the failed records during bulkupload part of bulkupload
+  listfailedrecords:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-listfailedrecords"
+      Handler: 'src/functions/bulkupload/listfailedrecords.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        listfailedrecords:
+          Type: Api
+          Properties:
+            Path: /bulk/listfailedrecords
+            Method: get
+            RestApiId: !Ref ApiGateway
+      Tags:
+        Name : !Sub "${AWS::StackName}-listfailedrecords"
+  listfailedrecordsperm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+      - listfailedrecords
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref listfailedrecords
+      Principal: apigateway.amazonaws.com
+
+#
+#lambda for moving entry from pending table to files table backend process event from SQS
+  filearrival:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-filearrival"
+      Handler: 'src/functions/filearrival/file_arrival_handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          STACK_NAME: !Sub "${AWS::StackName}"  # so it can call content index lambda
+      Events:
+        filearrival:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::ImportValue: !Sub "datalake-${Stage}-file-created-queue"
+            BatchSize: 10
+      Tags:
+        Name : !Sub "${AWS::StackName}-filearrival"
+  filearrivalPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - filearrival
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref filearrival
+      Principal: s3.amazonaws.com
+
+#
+#lambda for making index in elasticsearch backend process gets event from dyanmodb
+  dynamodbtoelasticsearch:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-dynamodbtoelasticsearch"
+      Handler: 'src/functions/dynamodbtoelasticsearch/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+           Stream:
+             Fn::ImportValue:
+               Fn::Sub: "datalake-${Stage}-files-table-stream"
+           BatchSize: !Ref DynamoToESStreamBatchSize
+           StartingPosition: TRIM_HORIZON
+      Tags:
+        Name : !Sub "${AWS::StackName}-dynamodbtoelasticsearch"
+  dynamodbtoelasticsearchPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - FilesBucket
+      - dynamodbtoelasticsearch
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref dynamodbtoelasticsearch
+      Principal: dynamodb.amazonaws.com
+
+#
+#lambda to publish sns topic of new filearrival in DL
+  publishsnstopic:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-publish_sns_topic"
+      Handler: 'src/functions/publish_sns_topic/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SNS_topic:
+            Fn::ImportValue: !Sub "datalake-${Stage}-file-notification-topic"
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream:
+              Fn::ImportValue:
+                Fn::Sub: "datalake-${Stage}-files-table-stream"
+            BatchSize: 100
+            StartingPosition: TRIM_HORIZON
+      Tags:
+        Name : !Sub "${AWS::StackName}-publishsnstopic"
+  publishsnstopicPerm:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref publishsnstopic
+      Principal: dynamodb.amazonaws.com
+
+#
+#Lambda for indexing the content in to DataLake elastic search
+  contentindex:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-contentindex"
+      Handler: 'src/functions/contentindex/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Tags:
+        Name : !Sub "${AWS::StackName}-contentindex"
+  contentindexPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - filearrival
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref contentindex
+      Principal: lambda.amazonaws.com
+
+#
+#lambda for searching the content from elasticsearch
+  contentsearch:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-contentsearch"
+      Handler: 'src/functions/contentsearch/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Tags:
+        Name : !Sub "${AWS::StackName}-contentsearch"
+      Events:
+        contentsearch:
+          Type: Api
+          Properties:
+            Path: /search/contentsearch/{schemaname}
+            Method: get
+            RestApiId: !Ref ApiGateway
+  contentsearchPerm:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - ApiGateway
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref contentsearch
+      Principal: apigateway.amazonaws.com
+
+#
+#lambda for publishing records in kinesis part of bulkupload not required as of now
+  kinesisstream:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName : !Sub "${AWS::StackName}-kinesisstream"
+      Handler: 'src/functions/kinesisstream/handler.handler'
+      Description: 'Restful API endpoint'
+      CodeUri: deploy.zip
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          KINESIS_NOTIFICATION_STREAM: !Sub "${AWS::StackName}-publish-FileAarival-KinesisStream"
+      Events:
+        kinesisstream:
+          Type: SNS
+          Properties:
+            Topic:
+              Fn::ImportValue: !Sub "datalake-${Stage}-file-notification-topic"
+      Tags:
+        Name : !Sub "${AWS::StackName}-kinesisstream"
+  kinesisstreamPerm:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref kinesisstream
+      Principal: sns.amazonaws.com
+
+#
+#Resource for Apigateway with API and Path cors and used swagger 2.0 for specifications.
+  ApiGateway:
+    Type: 'AWS::Serverless::Api'
+    Properties:
+      # MethodSettings #Enable access logging for API Gateway DL-169
+      MethodSettings: #This will enable the CloudWatch Logs for API Gateway not a Custom Logs; Logs group will be get created with name such as API-Gateway-Execution-Logs_<API-Id>/<stageName>
+        - LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: true
+          ResourcePath: "/*"
+          HttpMethod: "*"
+      StageName: !Ref apiGatewayStageName
+      Cors:
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+      DefinitionBody:
+        swagger: 2.0
+        info:
+          title: !Ref AWS::StackName
+        paths:
+          "/files":
+            post:
+              summary: "Request for a file upload"
+              description: ""
+              produces:
+              - "application/json"
+              parameters:
+                - in: "body"
+                  name: "body"
+                  description: "Metadata of the file which will be uploaded in DL "
+                  required: true
+                  schema:
+                    type: object
+                    additionalProperties: true
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${postfile.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/{proxy+}":
+            x-amazon-apigateway-any-method:
+              parameters:
+                - name: "proxy"
+                  in: "path"
+                  required: true
+                  type: "string"
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${proxyresponse.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/health":
+            get:
+              summary: "For Health Check Synthetic Monitoring"
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${healthcheck.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/files/ids/{id}":
+            get:
+              summary: "Download file using sha1_id"
+              parameters:
+              - in: "path"
+                name: "id"
+                description: "unique sha1_id of the file provided duing upload"
+                required: true
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${getfilebyid.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+            post:
+              summary: "Modify the Metadata field Values after the file has been uploaded"
+              description: ""
+              produces:
+              - "application/json"
+              parameters:
+              - in: "path"
+                name: "id"
+                description: "Unique sha1_id of the file to be updated"
+                required: true
+                type: string
+              - in: "path"
+                name: "field"
+                default: ""
+                description: "Metadata fields of the file to be updated"
+                required: true
+                type: string
+              - in: "body"
+                name: "body"
+                description: "field:value in json format that needs to be updated against the sha1_id"
+                required: true
+                schema:
+                      type: object
+                      additionalProperties: true
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${modifyfield.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/files/ids/{id}/{field}":
+            delete:
+              summary: "Delete the Metadata field after the file has been uploaded"
+              description: ""
+              produces:
+              - "application/json"
+              parameters:
+              - in: "path"
+                name: "id"
+                description: "Unique sha1_id of the file to be updated"
+                required: true
+                type: string
+              - in: "path"
+                name: "field"
+                description: "Metadata fields of the file to be updated"
+                required: true
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${deletefield.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/files/filename":
+            get:
+              summary: "Download file by schemaName & fileName & pathtoStore(optional if not provided during upload)"
+              parameters:
+              - in: "query"
+                name: "schema-name"
+                description: "schemaName of the file"
+                required: true
+                type: string
+              - in: "query"
+                name: "filename"
+                description: "fileName of the file"
+                required: true
+                type: string
+              - in: "query"
+                name: "pathtostore"
+                description: "pathToStore of the file"
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${getfile.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/files/status":
+            post:
+              summary: "Change FileStatus"
+              description: ""
+              produces:
+              - "application/json"
+              parameters:
+              - in: "body"
+                name: "body"
+                description: "All Sha1_id in the request body  would be marked as Inactive "
+                required: true
+                schema:
+                      type: object
+                      additionalProperties: true
+              - in: "query"
+                name: "status"
+                description: "To Make it to Active from Inactive "
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${filestatus.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/schemas/schemaname/{schema-name}":
+            get:
+              summary: "Search Schema Metadata using SchemName"
+              parameters:
+              - in: "path"
+                name: "schema-name"
+                description: "schema-name here"
+                required: true
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${getschema.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/schemas/search":
+            get:
+              summary: "Search Schema Metadata using Application-name or Business-unit or get the list of schemas"
+              parameters:
+              - in: "query"
+                name: "application-name"
+                description: "application-name here"
+                type: string
+              - in: "query"
+                name: "business-unit"
+                description: "business-unit here"
+                type: string
+              - in: "query"
+                name: "Limit"
+                description: "No of records to show"
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${listandfilterschema.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/schemas":
+            post:
+              summary: "Post a New Schema in DataLake"
+              description: ""
+              produces:
+              - "application/json"
+              parameters:
+              - in: "body"
+                name: "body"
+                description: "Schema here in Json format "
+                required: true
+                schema:
+                      type: object
+                      additionalProperties: true
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${postschema.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          #commented below resource creation will make changes according to DL-228
+          #"/schemas/roleapi":
+          #  post:
+          #    summary: "Create a new role to allow user to access particular schema"
+          #    description: ""
+          #    produces:
+          #    - "application/json"
+          #    parameters:
+          #    - in: "body"
+          #      name: "body"
+          #      description: "details here in Json format "
+          #      required: true
+          #      schema:
+          #            type: object
+          #            additionalProperties: true
+          #    responses:
+          #        "200":
+          #            description: Default response for CORS method
+          #            headers:
+          #              Access-Control-Allow-Headers:
+          #                type: "string"
+          #              Access-Control-Allow-Methods:
+          #                type: "string"
+          #              Access-Control-Allow-Origin:
+          #                type: "string"
+          #    security:
+          #      - ldsauthorizer: []
+          #    x-amazon-apigateway-integration:
+          #      responses:
+          #        default:
+          #          statusCode: '200'
+          #          responseParameters:
+          #            method.response.header.Access-Control-Allow-Headers : "'*'"
+          #            method.response.header.Access-Control-Allow-Methods : "'*'"
+          #            method.response.header.Access-Control-Allow-Origin: "'*'"
+          #      httpMethod: post
+          #      type: aws_proxy
+          #      uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${createrole.Arn}/invocations'
+          #      passthroughBehavior: "when_no_match"
+          "/search/{schemaname}":
+            get:
+              summary: "Search Metadata using schema name"
+              description: "Returns matched metadata records"
+              produces:
+                - "application/json"
+              parameters:
+                - name: "schemaname"
+                  in: "path"
+                  description: "here against which metadata to be searched"
+                  required: true
+                  type: string
+                - name: "query"
+                  in: "query"
+                  required: true
+                  type: string
+                - name: "fields"
+                  in: "query"
+                  description: "here in which you want specific word to be present"
+                  type: string
+                - name: "from-date-time"
+                  in: "query"
+                  type: string
+                - name: "to-date-time"
+                  in: "query"
+                  type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${searchfiles.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+          "/bulk/bulksearch/{schemaname}":
+            get:
+              summary: "Search data using schema name"
+              description: "Returns 1000 records and scrollid for next search"
+              produces:
+                - "application/json"
+              parameters:
+                - name: schemaname
+                  in: path
+                  required: true
+                  type: string
+                - name: query
+                  in: query
+                  required: true
+                  type: string
+                - name: scrollid
+                  in: query
+                  type: string
+                - name: fields
+                  in: query
+                  description: "here in which you want specific word to be present"
+                  type: string
+                - name: from-date-time
+                  in: query
+                  type: string
+                - name: to-date-time
+                  in: query
+                  type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${bulkscrollsearch.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+
+          "/search/contentsearch/{schemaname}":
+            get:
+              summary: "To search the content of file from Datalake using schema name"
+              description: "Returns sha1_id and Filename of matched contents"
+              produces:
+                - "application/json"
+              parameters:
+                - name: "schemaname"
+                  in: "path"
+                  required: true
+                  type: string
+                - name: "query"
+                  in: "query"
+                  required: true
+                  type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${contentsearch.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+
+          "/bulk/bulkupload":
+            post:
+              summary: "Request for bulk upload"
+              description: ""
+              produces:
+              - "application/json"
+              parameters:
+              - in: "body"
+                name: "body"
+                description: "upto 256 json records can be passed in body "
+                required: true
+                schema:
+                      type: object
+                      additionalProperties: true
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${bulkmetavalidator.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+
+          "/bulk/listfailedrecords":
+            get:
+              summary: "List records that failed during bulk upload"
+              parameters:
+              - in: "query"
+                name: "record_id"
+                description: "unique id which was returned during bulk upload request"
+                required: true
+                type: string
+              responses:
+                  "200":
+                      description: Default response for CORS method
+                      headers:
+                        Access-Control-Allow-Headers:
+                          type: "string"
+                        Access-Control-Allow-Methods:
+                          type: "string"
+                        Access-Control-Allow-Origin:
+                          type: "string"
+              security:
+                - ldsauthorizer: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers : "'*'"
+                      method.response.header.Access-Control-Allow-Methods : "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                httpMethod: post
+                type: aws_proxy
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${listfailedrecords.Arn}/invocations'
+                passthroughBehavior: "when_no_match"
+
+        securityDefinitions:
+          ldsauthorizer:
+            type: "apiKey"
+            name: "Authorization"
+            in: "header"
+            x-amazon-apigateway-authtype: "custom"
+            x-amazon-apigateway-authorizer:
+              authorizerUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ldsauthorizer.Arn}/invocations'
+              authorizerResultTtlInSeconds: 600
+              type: "token"
+
+Outputs:
+  LambdaExecutionRole:
+    Description: The execution role used by all lambdas
+    Value: !Sub "${LambdaExecutionRole.Arn}"
