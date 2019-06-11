@@ -1,0 +1,55 @@
+Parameters:
+  InstName:
+    Type: String
+    Description: 'Enter the instance name'
+
+  InstType:
+    Type: 'String'
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+    Default: t2.micro
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0080e4c5bc078760e
+    sa-east-1:
+      AMI: ami-0669a96e355eac82f
+
+
+Resources:
+  MyInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref InstType
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      SecurityGroups:
+       - !Ref Exsecgroup
+      KeyName: cfttest
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdm"
+        Ebs:
+          VolumeType: "standard"
+          DeleteOnTermination: "true"
+          VolumeSize: "4"
+      Tags:
+        - Key: Name
+          Value: !Ref InstName
+
+  MyEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref MyInstance
+
+
+  Exsecgroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: testsg
+      GroupDescription: 'allow port 22 from local machine'
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 182.76.82.166/32

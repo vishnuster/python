@@ -4,7 +4,7 @@ Parameters:
     Description: Name of the instance
   Mykeypair:
     Type: 'AWS::EC2::KeyPair::KeyName'
-    Description: Enter key name to login into the ec2 isntance
+    Description: Enter key name to login into the ec2 instance
 
 Mappings:
   Amimap:
