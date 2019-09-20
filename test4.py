@@ -1,23 +1,34 @@
+from docx import Document
 import os
-import docx2txt
-import time
-os.chdir('C:\\Users\\vprakas\\Desktop\\python\\kpi')
-a=os.listdir('C:\\Users\\vprakas\\Desktop\\python\\kpi')
-#fullText=[]
-for i in a:
-    try:
-        #print(i)
-        text = docx2txt.process(i)
-        b=text.splitlines()
-        for x in range(len(b)):
-            if "Maintenance Window" in b[x]:
+import re
+import datetime
+os.chdir("C:\\Users\\vprakas\\Desktop\\python\\kpi")
+a=os.listdir("C:\\Users\\vprakas\\Desktop\\python\\kpi")
+try:
+    for i in a:
+        cc=i.split("_")[0]
+        print(cc) #.................................................
+        doc=Document(i)
+        chdate=str(doc.tables[0].cell(10,2).text)
+        #print(chdate.splitlines())
 
-                for z in b[x+2:x+5]:
-                    print(z)
-            if "Affected Devices" in b[x]:
+        for i in chdate.splitlines():
+            a=["cst","ct","cdt","central"]
+            for x in a:
+                if x in i.casefold():
+                    changedate=i
+                    print(changedate) #................................................
+        chdescription=str(doc.tables[0].cell(1,1).text)
+        print(chdescription)#..............................................................
+        devicename=str(doc.tables[0].cell(9,0).text).replace("Affected Devices:","").replace(" ","")
+        print(devicename)#.........................................................
+        print("*"*100)
+            #if "cst" in i.casefold() or "ct" in i.casefold() or "cdt" in:
+            #    print(i)
 
-                for z in b[x:x+4]:
-                    print(z,end="|")
-        #print("*"*100)
-    except:
-        print("doc file instead of docx file.",i.capitalize())
+
+
+except:
+    pass
+
+
