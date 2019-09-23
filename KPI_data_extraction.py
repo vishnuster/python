@@ -2,8 +2,8 @@ from docx import Document
 import os
 from dateutil import parser
 import pandas as pd
-os.chdir("C:\\Users\\vprakas\\Desktop\\python\\kpi")
-a=os.listdir("C:\\Users\\vprakas\\Desktop\\python\\kpi")
+os.chdir("C:\\Users\\vprakas\\Desktop\\python\\kpi") #change the directory path to the path that contains all the CRS
+a=os.listdir("C:\\Users\\vprakas\\Desktop\\python\\kpi") #change the directory path to the path that contains all the CRS
 lst = []
 for i in a:
     try:
@@ -31,4 +31,4 @@ for i in a:
         print("doc format",i)
         pass
 df=pd.DataFrame(lst)
-df.to_excel("C:\\Users\\vprakas\\Desktop\\python\\KPI_output.xlsx")
+df.to_excel("C:\\Users\\vprakas\\Desktop\\python\\KPI_output.xlsx") #Give any path where you require the output excel sheet to be generated
