@@ -7,17 +7,16 @@ a=os.listdir("C:\\Users\\vprakas\\Desktop\\python\\kpi")
 lst = []
 for i in a:
     try:
-        cc=i.split("_")[0]
+        cc=i.split("_")[0] #extracts the cc number
         doc=Document(i)
-        chdescription = str(doc.tables[0].cell(1, 1).text)
-        devicename = str(doc.tables[0].cell(9, 0).text).replace("Affected Devices:", "").replace(" ", "")
-        chdate=str(doc.tables[0].cell(10,2).text)
+        chdescription = str(doc.tables[0].cell(1, 1).text) #extracts the change description
+        devicename = str(doc.tables[0].cell(9, 0).text).replace("Affected Devices:", "").replace(" ", "") #extracts the affected device name
+        chdate=str(doc.tables[0].cell(10,2).text)  #extacts the change date in CST
         for i in chdate.splitlines():
             a=["cst","ct","cdt","central"]
             for x in a:
                 if x in i.casefold():
                     changedate=i
-                    ###############################################
                     try:
                         dt = parser.parse(changedate)
                         chdt=dt.date()
@@ -28,12 +27,8 @@ for i in a:
                         pass
         lst.append((cc, chdt, time, chdescription, devicename))
     except:
-        er="error"
-        #lst.append((cc, chdt, time, chdescription, devicename))
         lst.append(("doc format", "doc format", "doc format", "doc format", "doc format"))
         print("doc format",i)
         pass
-#print(lst)
 df=pd.DataFrame(lst)
-#print(df)
 df.to_excel("C:\\Users\\vprakas\\Desktop\\python\\KPI_output.xlsx")
