@@ -2,8 +2,8 @@ from docx import Document
 import os
 from dateutil import parser
 import pandas as pd
-os.chdir("C:\\Users\\vprakas\\Desktop\\python\\kpi") #change the directory path to the path that contains all the CRS
 a=os.listdir("C:\\Users\\vprakas\\Desktop\\python\\kpi") #change the directory path to the path that contains all the CRS
+os.chdir("C:\\Users\\vprakas\\Desktop\\python\\kpi") #change the directory path to the path that contains all the CRS
 lst = []
 for i in a:
     try:
