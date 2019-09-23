@@ -10,8 +10,13 @@ for i in a:
         cc=i.split("_")[0] #extracts the cc number
         doc=Document(i)
         chdescription = str(doc.tables[0].cell(1, 1).text) #extracts the change description
-        devicename = str(doc.tables[0].cell(9, 0).text).replace("Affected Devices:", "").replace(" ", "") #extracts the affected device name
-        chdate=str(doc.tables[0].cell(10,2).text)  #extacts the change date in CST
+        devicename = str(doc.tables[0].cell(9, 0).text) #extracts the affected device name
+        if "Affected Devices" not in devicename:
+            devicename = str(doc.tables[0].cell(10, 0).text) #extracts the affected device name
+        if "Maintenance Window" in str(doc.tables[0].cell(10, 1).text):
+            chdate = str(doc.tables[0].cell(10, 2).text)  # extracts the change date in CST
+        else:
+            chdate = str(doc.tables[0].cell(11, 2).text)  # extracts the change date in CST
         for i in chdate.splitlines():
             a=["cst","ct","cdt","central"]
             for x in a:
@@ -25,7 +30,7 @@ for i in a:
                         chdt=changedate
                         time=changedate
                         pass
-        lst.append((cc, chdt, time, chdescription, devicename))
+        lst.append((cc, chdt, time, chdescription, devicename.split(":")[1]))
     except:
         lst.append(("doc format", "doc format", "doc format", "doc format", "doc format"))
         print("doc format",i)
