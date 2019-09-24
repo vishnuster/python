@@ -32,7 +32,7 @@ for i in a:
                         pass
         lst.append((cc, chdt, time, chdescription, devicename.split(":")[1]))
     except:
-        lst.append(("doc format", "doc format", "doc format", "doc format", "doc format"))
+        lst.append((cc, "doc format", "doc format", "doc format", "doc format"))
         print("doc format",i)
         pass
 df=pd.DataFrame(lst)
